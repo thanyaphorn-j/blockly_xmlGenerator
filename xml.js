@@ -1,0 +1,345 @@
+Blockly.Xml = {};
+
+/**
+ * Encode a block tree as XML.
+ * @param {!Object} blockGroup The SVG workspace.
+ * @return {!Element} XML document.
+ */
+Blockly.Xml.workspaceToDom = function (blockGroup) {
+    var xml = document.createElement('xml');
+    var blocks = blockGroup.getTopBlocks(false);
+    for (var i = 0, block; block = blocks[i]; i++) {
+        var element = Blockly.Xml.blockToDom_(block);
+        // var xy = block.getRelativeToSurfaceXY();
+        // element.setAttribute('x', Blockly.RTL ? -xy.x : xy.x);
+        // element.setAttribute('y', xy.y);
+        xml.appendChild(element);
+    }
+    console.log(xml)
+    return xml;
+};
+
+/**
+ * Encode a block subtree as XML.
+ * @param {!Blockly.Block} block The root block to encode.
+ * @return {!Element} Tree of XML elements.
+ * @private
+ */
+Blockly.Xml.blockToDom_ = function (block) {
+    var element = document.createElement('block');
+    element.setAttribute('type', block.type);
+    if (block.mutationToDom) {
+        // Custom data for an advanced block.
+        element.appendChild(block.mutationToDom());
+    }
+    for (var i = 0, title; title = block.titleRow[i]; i++) {
+        var container = document.createElement('title');
+        var titleText = document.createTextNode(title.getText());
+        container.appendChild(titleText);
+        element.appendChild(container);
+    }
+
+    // if (block.comment) {
+    //     var commentElement = document.createElement('comment');
+    //     var commentText = document.createTextNode(block.comment.getText());
+    //     commentElement.appendChild(commentText);
+    //     commentElement.setAttribute('pinned', block.comment.isPinned());
+    //     var xy = block.comment.getBubbleLocation();
+    //     commentElement.setAttribute('x', xy.x);
+    //     commentElement.setAttribute('y', xy.y);
+    //     var hw = block.comment.getBubbleSize();
+    //     commentElement.setAttribute('h', hw.height);
+    //     commentElement.setAttribute('w', hw.width);
+    //     element.appendChild(commentElement);
+    // }
+
+    var valueInputs = false;
+    for (var i = 0, input; input = block.inputList[i]; i++) {
+        var container;
+        if (input.type == Blockly.LOCAL_VARIABLE) {
+            container = document.createElement('variable');
+            container.setAttribute('data', input.getText());
+        } else {
+            if (input.type == Blockly.INPUT_VALUE) {
+                valueInputs = true;
+                container = document.createElement('value');
+            } else if (input.type == Blockly.NEXT_STATEMENT) {
+                container = document.createElement('statement');
+            }
+            var childBlock = input.targetBlock();
+            if (childBlock) {
+                container.appendChild(Blockly.Xml.blockToDom_(childBlock));
+            }
+        }
+        if (input.label && input.label.getText) {
+            container.setAttribute('label', input.label.getText());
+        }
+        element.appendChild(container);
+    }
+    if (valueInputs) {
+        element.setAttribute('inline', block.inputsInline);
+    }
+    if (block.collapsed) {
+        element.setAttribute('collapsed', true);
+    }
+
+    if (block.nextConnection) {
+        var container = document.createElement('next');
+        var nextBlock = block.nextConnection.targetBlock();
+        if (nextBlock) {
+            container.appendChild(Blockly.Xml.blockToDom_(nextBlock));
+        }
+        element.appendChild(container);
+    }
+
+    return element;
+};
+
+/**
+ * Converts a DOM structure into plain text.
+ * Currently the text format is fairly ugly: all one line with no whitespace.
+ * @param {!Element} dom A tree of XML elements.
+ * @return {string} Text representation.
+ */
+Blockly.Xml.domToText = function (dom) {
+    var oSerializer = new XMLSerializer();
+    return oSerializer.serializeToString(dom);
+};
+
+/**
+ * Converts a DOM structure into properly indented text.
+ * @param {!Element} dom A tree of XML elements.
+ * @return {string} Text representation.
+ */
+Blockly.Xml.domToPrettyText = function (dom) {
+    // This function is not guaranteed to be correct for all XML.
+    // But it handles the XML that Blockly generates.
+    var line = Blockly.Xml.domToText(dom);
+    // Add place every open and close tag on its own line.
+    var lines = line.split('<');
+    // Indent every line.
+    var indent = '';
+    for (var x = 1; x < lines.length; x++) {
+        var nextChar = lines[x][0];
+        if (nextChar == '/') {
+            indent = indent.substring(2);
+        }
+        lines[x] = indent + '<' + lines[x];
+        if (nextChar != '/') {
+            indent += '  ';
+        }
+    }
+    // Pull simple tags back together.
+    // E.g. <foo></foo>
+    // var text = lines.join('\n');
+    // text = text.replace(/(<(\w+)[^>]*>[^\n]*)\n *<\/\2>/g, '$1</$2>');
+    // // Trim leading blank line.
+    // return text.replace(/^\n/, '');
+};
+
+/**
+ * Converts plain text into a DOM structure.
+ * Throws an error if XML doesn't parse.
+ * @param {string} text Text representation.
+ * @return {!Element} A tree of XML elements.
+ */
+Blockly.Xml.textToDom = function (text) {
+    var oParser = new DOMParser();
+    var dom = oParser.parseFromString(text, 'text/xml');
+    // The DOM should have one and only one top-level node, an XML tag.
+    if (!dom || !dom.firstChild || dom.firstChild.tagName != 'xml' ||
+        dom.firstChild !== dom.lastChild) {
+        // Whatever we got back from the parser is not XML.
+        throw 'Blockly.Xml.textToDom did not obtain a valid XML tree.';
+    }
+    return dom.firstChild;
+};
+
+/**
+ * Decode an XML DOM and create blocks on the workspace.
+ * @param {!Object} blockGroup The SVG workspace.
+ * @param {!Element} xml XML DOM.
+ */
+Blockly.Xml.domToWorkspace = function (blockGroup, xml) {
+    for (var x = 0, xmlChild; xmlChild = xml.childNodes[x]; x++) {
+        if (xmlChild.nodeName && xmlChild.nodeName.toLowerCase() == 'block') {
+            var block = Blockly.Xml.domToBlock_(blockGroup, xmlChild);
+            var blockX = parseInt(xmlChild.getAttribute('x'), 10);
+            var blockY = parseInt(xmlChild.getAttribute('y'), 10);
+            if (!isNaN(blockX) && !isNaN(blockY)) {
+                block.moveBy(Blockly.RTL ? -blockX : blockX, blockY);
+            }
+        }
+    }
+};
+
+/**
+ * Decode an XML block tag and create a block (and possibly sub blocks) on the
+ * workspace.
+ * @param {!Object} blockGroup The SVG workspace.
+ * @param {!Element} xmlBlock XML block element.
+ * @return {!Blockly.Block} The root block created.
+ * @private
+ */
+Blockly.Xml.domToBlock_ = function (blockGroup, xmlBlock) {
+    var prototypeName = xmlBlock.getAttribute('type');
+    var block = new Blockly.Block(blockGroup, prototypeName);
+    block.initSvg();
+
+    var inline = xmlBlock.getAttribute('inline');
+    if (inline) {
+        block.setInputsInline(inline == 'true');
+    }
+
+    var collapsed = xmlBlock.getAttribute('collapsed');
+    if (collapsed) {
+        block.setCollapsed(collapsed == 'true');
+    }
+
+    var titleIndex = -1;
+    var inputIndicies = {};
+    inputIndicies[Blockly.LOCAL_VARIABLE] = -1;
+    inputIndicies[Blockly.INPUT_VALUE] = -1;
+    inputIndicies[Blockly.NEXT_STATEMENT] = -1;
+    /**
+     * Returns the next input of a given type.
+     * Closure: uses inputIndicies and block from external scope.
+     * @param {number} type The type of input to search for.
+     * @return {Object} The next input or null if none.
+     */
+    function nextInput(type) {
+        var startIndex = inputIndicies[type];
+        for (var i = startIndex + 1; i < block.inputList.length; i++) {
+            if (block.inputList[i].type == type) {
+                inputIndicies[type] = i;
+                return block.inputList[i];
+            }
+        }
+        return null;
+    }
+
+    for (var x = 0, xmlChild; xmlChild = xmlBlock.childNodes[x]; x++) {
+        if (xmlChild.nodeType == 3 && xmlChild.data.match(/^\s*$/)) {
+            // Extra whitespace between tags does not concern us.
+            continue;
+        }
+        var blockChild = null;
+        var input;
+
+        // Find the first 'real' grandchild node (that isn't whitespace).
+        var firstRealGrandchild = null;
+        for (var y = 0, grandchildNode; grandchildNode = xmlChild.childNodes[y]; y++) {
+            if (grandchildNode.nodeType != 3 || !grandchildNode.data.match(/^\s*$/)) {
+                firstRealGrandchild = grandchildNode;
+            }
+        }
+
+        switch (xmlChild.tagName.toLowerCase()) {
+            case 'mutation':
+                // Custom data for an advanced block.
+                if (block.domToMutation) {
+                    block.domToMutation(xmlChild);
+                }
+                break;
+            case 'comment':
+                block.setCommentText(xmlChild.textContent);
+                var pinned = xmlChild.getAttribute('pinned');
+                if (pinned) {
+                    block.comment.setPinned(pinned == 'true');
+                }
+                var bubbleX = parseInt(xmlChild.getAttribute('x'), 10);
+                var bubbleY = parseInt(xmlChild.getAttribute('y'), 10);
+                if (!isNaN(bubbleX) && !isNaN(bubbleY)) {
+                    block.comment.setBubbleLocation(bubbleX, bubbleY, false);
+                }
+                var bubbleW = parseInt(xmlChild.getAttribute('w'), 10);
+                var bubbleH = parseInt(xmlChild.getAttribute('h'), 10);
+                if (!isNaN(bubbleW) && !isNaN(bubbleH)) {
+                    block.comment.setBubbleSize(bubbleW, bubbleH);
+                }
+                break;
+            case 'title':
+                block.setTitleText(xmlChild.textContent, ++titleIndex);
+                break;
+            case 'variable':
+                var data = xmlChild.getAttribute('data');
+                if (data !== null) {
+                    input = nextInput(Blockly.LOCAL_VARIABLE);
+                    if (!input) {
+                        throw 'Variable input does not exist.';
+                    }
+                    input.setText(data);
+                }
+                break;
+            case 'value':
+                input = nextInput(Blockly.INPUT_VALUE);
+                if (!input) {
+                    throw 'Value input does not exist.';
+                }
+                if (firstRealGrandchild && firstRealGrandchild.tagName &&
+                    firstRealGrandchild.tagName.toLowerCase() == 'block') {
+                    blockChild = Blockly.Xml.domToBlock_(blockGroup, firstRealGrandchild);
+                    if (!blockChild.outputConnection) {
+                        throw 'Child block does not have output value.';
+                    }
+                    input.connect(blockChild.outputConnection);
+                }
+                break;
+            case 'statement':
+                input = nextInput(Blockly.NEXT_STATEMENT);
+                if (!input) {
+                    throw 'Statement input does not exist.';
+                }
+                if (firstRealGrandchild && firstRealGrandchild.tagName &&
+                    firstRealGrandchild.tagName.toLowerCase() == 'block') {
+                    blockChild = Blockly.Xml.domToBlock_(blockGroup, firstRealGrandchild);
+                    if (!blockChild.previousConnection) {
+                        throw 'Child block does not have previous statement.';
+                    }
+                    input.connect(blockChild.previousConnection);
+                }
+                break;
+            case 'next':
+                if (firstRealGrandchild && firstRealGrandchild.tagName &&
+                    firstRealGrandchild.tagName.toLowerCase() == 'block') {
+                    if (!block.nextConnection) {
+                        throw 'Next statement does not exist.';
+                    } else if (block.nextConnection.targetConnection) {
+                        // This could happen if there is more than one XML 'next' tag.
+                        throw 'Next statement is already connected.';
+                    }
+                    blockChild = Blockly.Xml.domToBlock_(blockGroup, firstRealGrandchild);
+                    if (!blockChild.previousConnection) {
+                        throw 'Next block does not have previous statement.';
+                    }
+                    block.nextConnection.connect(blockChild.previousConnection);
+                }
+                break;
+            default:
+            // Unknown tag; ignore.  Same principle as HTML parsers.
+        }
+        var labelText = xmlChild.getAttribute('label');
+        if (labelText !== null && input && input.label && input.label.setText) {
+            input.label.setText(labelText);
+        }
+    }
+    block.render();
+    return block;
+};
+
+/**
+ * Find the first 'real' child of a node, skipping whitespace text nodes.
+ * Return true if that child is of the the specified type (case insensitive).
+ * @param {!Node} parentNode The parent node.
+ * @param {string} tagName The node type to check for.
+ * @return {boolean} True if the first real child is the specified type.
+ * @private
+ */
+Blockly.Xml.isFirstRealChild_ = function (parentNode, tagName) {
+    for (var x = 0, childNode; childNode = parentNode.childNodes[x]; x++) {
+        if (childNode.nodeType != 3 || !childNode.data.match(/^\s*$/)) {
+            return childNode.tagName && childNode.tagName.toLowerCase() == tagName;
+        }
+    }
+    return false;
+};
